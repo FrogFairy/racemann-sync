@@ -1,0 +1,134 @@
+/* Панель синхронизации */
+#racemann-sync-panel {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    background: rgba(0, 0, 0, 0.85);
+    color: white;
+    padding: 10px 15px;
+    border-radius: 8px;
+    z-index: 10000;
+    font-family: Arial, sans-serif;
+    font-size: 12px;
+    min-width: 250px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+    border: 1px solid #333;
+}
+
+.sync-status {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #444;
+}
+
+.status-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 8px;
+}
+
+.status-indicator.connected {
+    background-color: #4CAF50;
+    box-shadow: 0 0 5px #4CAF50;
+}
+
+.status-indicator.disconnected {
+    background-color: #ff9800;
+}
+
+.status-indicator.error {
+    background-color: #f44336;
+    box-shadow: 0 0 5px #f44336;
+}
+
+.team-selection {
+    margin-bottom: 8px;
+}
+
+.team-selection select {
+    width: 100%;
+    padding: 4px;
+    margin-bottom: 5px;
+    background: #333;
+    color: white;
+    border: 1px solid #555;
+    border-radius: 4px;
+}
+
+.team-selection button {
+    width: 100%;
+    padding: 5px;
+    background: #2196F3;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.team-selection button:hover {
+    background: #0b7dda;
+}
+
+.connected-managers {
+    text-align: center;
+    font-size: 11px;
+    color: #aaa;
+}
+
+/* Индикаторы синхронизации на элементах */
+.sync-indicator {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #4CAF50;
+    top: -2px;
+    right: -2px;
+    box-shadow: 0 0 3px #4CAF50;
+}
+
+.kart-synced {
+    border: 1px solid #4CAF50 !important;
+}
+
+.pit-synced {
+    background-color: rgba(76, 175, 80, 0.1) !important;
+}
+
+/* Уведомления */
+.sync-notification {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: #333;
+    color: white;
+    padding: 10px 15px;
+    border-radius: 6px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    z-index: 10001;
+    animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+/* Адаптивность */
+@media (max-width: 768px) {
+    #racemann-sync-panel {
+        top: 5px;
+        right: 5px;
+        left: 5px;
+        min-width: auto;
+    }
+}
