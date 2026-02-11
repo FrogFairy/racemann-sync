@@ -66,7 +66,7 @@ class RaceSyncServer:
         # Подключенные клиенты: team -> set of websockets
         self.connected_clients: Dict[str, Set[websockets.WebSocketServerProtocol]] = {}
         
-        # Состояния команд
+        # Состояния картов для команд
         self.team_states: Dict[str, TeamState] = {}
         
         # Клиентские сессии: websocket -> team
@@ -178,6 +178,8 @@ class RaceSyncServer:
             self.team_states[team] = TeamState(team)
             logger.info(f"Создано состояние для команды {team}")
         
+        logger.info(f"Текущее состояние: {self.team_states[team].get_state()}")
+        
         # Отправляем подтверждение
         await self.send_to_client(websocket, {
             'type': 'team_confirmed',
@@ -190,34 +192,34 @@ class RaceSyncServer:
         await self.send_full_state_to_client(websocket, team, client_id, is_new=True)
     
     async def handle_kart_update(self, data: dict, websocket: websockets.WebSocketServerProtocol, client_id: str):
-        """Обработка обновления карта от клиента"""
+        """Обработка обновления ОДНОГО карта от клиента"""
         team = data.get('team')
         kart_number = data.get('kart_number')
         status = data.get('status')
         
         if not all([team, kart_number, status is not None]):
-            logger.warning(f"Неполные данные от клиента {client_id}")
             return
         
-        # Проверяем, что клиент в нужной команде
-        if team not in self.team_states or websocket not in self.connected_clients.get(team, set()):
-            logger.warning(f"Клиент {client_id} пытается обновить не свою команду {team}")
+        # Проверяем, что клиент в команде
+        if team not in self.connected_clients or websocket not in self.connected_clients[team]:
             return
         
-        # Обновляем состояние на сервере
-        team_state = self.team_states[team]
-        was_updated = team_state.update_kart(kart_number, status, client_id)
+        # Инициализируем состояние команды если нужно
+        if team not in self.team_states:
+            self.team_states[team] = TeamState(team)
         
-        if was_updated:
-            self.stats['total_updates'] += 1
+        # Получаем предыдущий статус
+        old_status = self.team_states[team].get_state().get("status")
+        logger.info(f"СЕРВЕР: Старая информация о команде: {self.team_states[team].get_state()}")
+        
+        # ЕСЛИ СТАТУС ИЗМЕНИЛСЯ - обновляем состояние на сервере
+        if old_status != status:
+            self.team_states[team].update_kart(kart_number, status, client_id)
             
-            # Рассылаем обновление всем клиентам команды
+            logger.info(f"СЕРВЕР: Команда {team}, Карт {kart_number}: {old_status} -> {status} от клиента {client_id}")
+            
+            # Рассылаем ТОЛЬКО ЭТО ИЗМЕНЕНИЕ всем клиентам команды
             await self.broadcast_kart_update(team, kart_number, status, client_id)
-            
-            # Обновляем версию для всех клиентов
-            for client_ws in self.connected_clients.get(team, set()):
-                key = (client_ws, team)
-                self.client_versions[key] = team_state.version - 1  # Старая версия
     
     async def handle_sync_request(self, data: dict, websocket: websockets.WebSocketServerProtocol, client_id: str):
         """Обработка запроса синхронизации"""
@@ -288,7 +290,7 @@ class RaceSyncServer:
         self.client_versions[key] = team_state.version
     
     async def broadcast_kart_update(self, team: str, kart_number: str, status: int, sender_client_id: str):
-        """Рассылка обновления карта всем клиентам команды"""
+        """Рассылка обновления ТОЛЬКО ОДНОГО КАРТА всем клиентам команды"""
         if team not in self.connected_clients:
             return
         
@@ -297,18 +299,18 @@ class RaceSyncServer:
             'team': team,
             'kart_number': kart_number,
             'status': status,
-            'sender': sender_client_id,
             'timestamp': datetime.now().isoformat()
         }
         
         tasks = []
         for websocket in self.connected_clients[team]:
-            client_id = self.get_client_id(websocket)
+            client_id = f"client_{id(websocket)}"
             if client_id == sender_client_id:
                 continue
             
             try:
                 tasks.append(websocket.send(json.dumps(message)))
+                logger.info(f"json: {json.dumps(message)}")
             except:
                 pass
         
