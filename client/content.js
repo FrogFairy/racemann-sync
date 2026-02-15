@@ -259,7 +259,7 @@ class RaceManagerSync {
                         console.log(`RaceMann Sync: Радиокнопка для статуса ${targetStatus} не найдена`);
                         resolve(false);
                     }
-                }, 300);
+                }, 400);
                 
             } catch (error) {
                 console.error('RaceMann Sync: Ошибка при эмуляции:', error);
