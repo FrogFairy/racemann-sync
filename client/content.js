@@ -9,39 +9,26 @@ class RaceManagerSync {
             serverUrl: 'ws://localhost:8765'
         };
         
-        // Ключ для localStorage
-        this.storageKeyPrefix = null;
-        this.raceId = null;
-        
-        // Локальное состояние
+        // Состояние
         this.localKartStates = {};
         this.serverStateVersion = 0;
+        
+        // Для предотвращения циклических вызовов
+        this.isProcessingRemoteUpdate = false;
+        this.currentProcessingKart = null;
         
         // Интервалы
         this.syncInterval = null;
         this.statusCheckInterval = null;
         
-        // Флаги
-        this.isSyncing = false;
-        this.initialized = false;
-        
-        // Дебаг
-        this.debug = true;
-        
         this.init();
     }
 
     async init() {
-        console.log('RaceMann Sync: Инициализация класса');
+        console.log('RaceMann Sync: Инициализация');
         await this.loadSettings();
         this.createStatusUI();
         this.waitForManagerTab();
-    }
-
-    log(...args) {
-        if (this.debug) {
-            console.log('RaceMann Sync:', ...args);
-        }
     }
 
     async loadSettings() {
@@ -50,7 +37,6 @@ class RaceManagerSync {
                 if (result.raceSyncSettings) {
                     this.settings = { ...this.settings, ...result.raceSyncSettings };
                     this.serverUrl = this.settings.serverUrl;
-                    this.log('Настройки загружены:', this.settings);
                 }
                 resolve();
             });
@@ -58,18 +44,16 @@ class RaceManagerSync {
     }
 
     waitForManagerTab() {
-        this.log('Ожидание менеджера гонки...');
-        
         const observer = new MutationObserver(() => {
             const managerTab = document.getElementById('mngTab');
             
             if (managerTab && managerTab.style.display !== 'none') {
-                this.log('Менеджер гонки обнаружен');
+                console.log('RaceMann Sync: Менеджер гонки обнаружен');
                 observer.disconnect();
                 
-                this.detectRaceId();
+                this.detectCurrentTeam();
                 this.setupTeamMonitoring();
-                this.initializeLocalState();
+                this.startMonitoring();
                 
                 if (this.settings.autoConnect) {
                     setTimeout(() => this.connectToServer(), 1000);
@@ -85,122 +69,41 @@ class RaceManagerSync {
         });
     }
 
-    detectRaceId() {
-        // Извлекаем ID гонки из локального хранилища
-        const urlMatch = localStorage.getItem('lastRaceId');
-        if (urlMatch) {
-            this.raceId = urlMatch;
-            this.storageKeyPrefix = `carGood${this.raceId}`;
-            this.log('ID гонки определен:', this.raceId);
-            this.log('Префикс ключа:', this.storageKeyPrefix);
-        } else {
-            this.log('Не удалось определить ID гонки');
+    detectCurrentTeam() {
+        const teamSelect = document.getElementById('mng-comp-select');
+        if (teamSelect && teamSelect.value) {
+            this.currentTeam = teamSelect.value;
+            console.log('RaceMann Sync: Команда определена:', this.currentTeam);
         }
     }
 
     setupTeamMonitoring() {
-        this.log('Настройка мониторинга команды');
-        this.detectCurrentTeam();
-        
         const teamSelect = document.getElementById('mng-comp-select');
         if (teamSelect) {
-            this.log('Select команды найден');
             teamSelect.addEventListener('change', () => {
-                const newTeam = teamSelect.options[teamSelect.selectedIndex].text;
-                this.log('Изменение команды:', newTeam);
-                if (newTeam && newTeam !== this.currentTeam && teamSelect.options[teamSelect.selectedIndex].text !== 'Выбери команду') {
+                const newTeam = teamSelect.value;
+                if (newTeam && newTeam !== this.currentTeam) {
                     this.currentTeam = newTeam;
                     this.localKartStates = {};
-                    this.serverStateVersion = 0;
                     
                     if (this.isConnected) {
                         this.sendTeamSelection();
-                    } else {
-                        this.log('Не подключены к серверу, команда не отправлена');
                     }
                 }
             });
-        } else {
-            this.log('Select команды НЕ НАЙДЕН!');
         }
     }
 
-    detectCurrentTeam() {
-        const teamSelect = document.getElementById('mng-comp-select');
-        if (teamSelect && teamSelect.options[teamSelect.selectedIndex].text !== 'Выбери команду') {
-            this.currentTeam = teamSelect.options[teamSelect.selectedIndex].text;
-            this.log('Команда определена из select:', this.currentTeam);
-            return;
-        }
+    startMonitoring() {
+        // Собираем начальные статусы
+        this.collectCurrentStatuses();
         
-        if (!this.currentTeam) {
-            this.log('Команда НЕ ОПРЕДЕЛЕНА!');
-        }
-    }
-
-    initializeLocalState() {
-        this.log('Инициализация локального состояния');
-        this.collectInitialKartStates();
-        this.startStatusMonitoring();
-        this.initialized = true;
-        this.log('Инициализация завершена');
-    }
-
-    collectInitialKartStates() {
-        const carsContainer = document.getElementById('mng-carsGood');
-        if (!carsContainer) {
-            this.log('Контейнер картов не найден!');
-            return;
-        }
-        
-        const kartElements = carsContainer.querySelectorAll('[onclick*="editMngCarGoodStart"]');
-        this.log(`Найдено элементов картов: ${kartElements.length}`);
-        
-        kartElements.forEach(element => {
-            const onclick = element.getAttribute('onclick');
-            const match = onclick.match(/editMngCarGoodStart\('(\d+)'\)/);
-            if (!match) {
-                this.log('Не удалось извлечь номер карта из:', onclick);
-                return;
-            }
-            
-            const kartNumber = match[1];
-            let status = 0;
-            
-            // Проверяем localStorage
-            if (this.storageKeyPrefix) {
-                const storageKey = `${this.storageKeyPrefix}${kartNumber}`;
-                const storedValue = localStorage.getItem(storageKey);
-                if (storedValue !== null) {
-                    status = parseInt(storedValue);
-                    this.log(`Карт ${kartNumber}: из localStorage = ${status}`);
-                }
-            }
-            
-            // Проверяем классы
-            for (let i = 0; i <= 4; i++) {
-                if (element.classList.contains(`car-good-${i}`)) {
-                    status = i;
-                    this.log(`Карт ${kartNumber}: из классов = ${status}`);
-                    break;
-                }
-            }
-            
-            this.localKartStates[kartNumber] = status;
-        });
-        
-        this.log('Начальное состояние картов:', this.localKartStates);
-    }
-
-    startStatusMonitoring() {
-        this.log('Запуск мониторинга статусов');
-        
-        // Быстрая проверка изменений
+        // Отслеживаем изменения каждые 500мс
         this.statusCheckInterval = setInterval(() => {
-            this.checkForLocalChanges();
-        }, 300);
+            this.checkForChanges();
+        }, 500);
         
-        // Медленная синхронизация с сервером
+        // Синхронизация с сервером каждые 2 секунды
         this.syncInterval = setInterval(() => {
             if (this.isConnected && this.currentTeam) {
                 this.requestSync();
@@ -208,10 +111,37 @@ class RaceManagerSync {
         }, 2000);
     }
 
-    checkForLocalChanges() {
-        if (this.isSyncing || !this.initialized) {
-            return;
-        }
+    collectCurrentStatuses() {
+        const carsContainer = document.getElementById('mng-carsGood');
+        if (!carsContainer) return;
+        
+        const kartElements = carsContainer.querySelectorAll('[onclick*="editMngCarGoodStart"]');
+        
+        kartElements.forEach(element => {
+            const onclick = element.getAttribute('onclick');
+            const match = onclick.match(/editMngCarGoodStart\('(\d+)'\)/);
+            if (!match) return;
+            
+            const kartNumber = match[1];
+            
+            // Определяем статус по классам
+            let status = 0;
+            for (let i = 0; i <= 4; i++) {
+                if (element.classList.contains(`car-good-${i}`)) {
+                    status = i;
+                    break;
+                }
+            }
+            
+            this.localKartStates[kartNumber] = status;
+        });
+        
+        console.log('RaceMann Sync: Начальные статусы:', this.localKartStates);
+    }
+
+    checkForChanges() {
+        // Если сейчас обрабатываем удаленное обновление, пропускаем проверку
+        if (this.isProcessingRemoteUpdate) return;
         
         const carsContainer = document.getElementById('mng-carsGood');
         if (!carsContainer) return;
@@ -235,55 +165,110 @@ class RaceManagerSync {
                 }
             }
             
-            // Предыдущий статус
             const lastStatus = this.localKartStates[kartNumber];
             
             if (lastStatus !== currentStatus) {
-                this.log(`Обнаружено изменение карта ${kartNumber}: ${lastStatus} -> ${currentStatus}`);
-                
                 changes.push({
-                    kartNumber: kartNumber,
+                    kartNumber,
                     status: currentStatus,
                     oldStatus: lastStatus
                 });
                 
-                // Обновляем локальное состояние
                 this.localKartStates[kartNumber] = currentStatus;
-                
-                // Обновляем localStorage
-                this.updateLocalStorage(kartNumber, currentStatus);
             }
         });
         
         // Отправляем изменения на сервер
-        if (changes.length > 0) {
-            this.log(`Найдено ${changes.length} изменений`);
-            
-            if (this.isConnected && this.currentTeam) {
-                changes.forEach(change => {
-                    this.sendKartUpdate(change.kartNumber, change.status);
-                    this.showKartIndicator(change.kartNumber, 'send');
-                });
-            } else {
-                this.log(`Не отправлено: подключен=${this.isConnected}, команда=${this.currentTeam}`);
-            }
+        if (changes.length > 0 && this.isConnected && this.currentTeam) {
+            console.log('RaceMann Sync: Локальные изменения:', changes);
+            changes.forEach(change => {
+                this.sendKartUpdate(change.kartNumber, change.status);
+                this.showKartIndicator(change.kartNumber, 'send');
+            });
         }
     }
 
-    updateLocalStorage(kartNumber, status) {
-        if (!this.storageKeyPrefix) {
-            this.log('Не могу обновить localStorage: нет префикса ключа');
-            return;
-        }
-        
-        const storageKey = `${this.storageKeyPrefix}${kartNumber}`;
-        localStorage.setItem(storageKey, status.toString());
-        this.log(`Обновлен localStorage: ${storageKey} = ${status}`);
+    // Эмуляция кликов для изменения статуса карта
+    async simulateKartClick(kartNumber, targetStatus) {
+        return new Promise((resolve) => {
+            try {
+                console.log(`RaceMann Sync: Эмуляция кликов для карта ${kartNumber} -> статус ${targetStatus}`);
+                
+                // 1. Находим элемент карта
+                const carsContainer = document.getElementById('mng-carsGood');
+                if (!carsContainer) {
+                    resolve(false);
+                    return;
+                }
+                
+                const kartElements = carsContainer.querySelectorAll('[onclick*="editMngCarGoodStart"]');
+                let kartElement = null;
+                
+                kartElements.forEach(element => {
+                    const onclick = element.getAttribute('onclick');
+                    const match = onclick.match(/editMngCarGoodStart\('(\d+)'\)/);
+                    if (match && match[1] === kartNumber) {
+                        kartElement = element;
+                    }
+                });
+                
+                if (!kartElement) {
+                    console.log(`RaceMann Sync: Карт ${kartNumber} не найден`);
+                    resolve(false);
+                    return;
+                }
+                
+                // 2. Кликаем на карт для открытия диалога
+                kartElement.click();
+                
+                // 3. Ждем появления диалога
+                setTimeout(() => {
+                    const dialog = document.getElementById('editMngCarGoodPopup');
+                    if (!dialog || dialog.style.display === 'none' || !dialog.parentElement.classList.contains('ui-popup-active')) {
+                        console.log('RaceMann Sync: Диалог не открылся');
+                        resolve(false);
+                        return;
+                    }
+                    
+                    // 4. Выбираем нужный статус
+                    const radioToSelect = document.getElementById(`editMngCar_good_${targetStatus}`);
+                    if (radioToSelect) {
+                        radioToSelect.click();
+                        console.log(`RaceMann Sync: Выбран статус ${targetStatus}`);
+                        
+                        // 5. Ждем и нажимаем кнопку ОК
+                        setTimeout(() => {
+                            // Кнопка ОК
+                            const okButton = dialog.querySelector('#editMngCarGoodPopup > div.ui-content > a.ui-link.ui-btn.ui-btn-s.ui-btn-inline.ui-shadow.ui-corner-all');
+                            
+                            if (okButton) {
+                                okButton.click();
+                                console.log(`RaceMann Sync: Нажата кнопка ОК для карта ${kartNumber}`);
+                                
+                                // Обновляем локальное состояние
+                                setTimeout(() => {
+                                    this.localKartStates[kartNumber] = targetStatus;
+                                    resolve(true);
+                                }, 100);
+                            } else {
+                                console.log('RaceMann Sync: Кнопка ОК не найдена');
+                                resolve(false);
+                            }
+                        }, 100);
+                    } else {
+                        console.log(`RaceMann Sync: Радиокнопка для статуса ${targetStatus} не найдена`);
+                        resolve(false);
+                    }
+                }, 300);
+                
+            } catch (error) {
+                console.error('RaceMann Sync: Ошибка при эмуляции:', error);
+                resolve(false);
+            }
+        });
     }
 
     async connectToServer() {
-        this.log('Подключение к серверу:', this.serverUrl);
-        
         if (this.wsConnection) {
             this.wsConnection.close();
         }
@@ -295,30 +280,23 @@ class RaceManagerSync {
             
             this.wsConnection.onopen = () => {
                 this.isConnected = true;
-                this.log('WebSocket подключен');
                 this.updateStatus('connected', 'Подключено');
                 
                 if (this.currentTeam) {
-                    this.log('Отправка выбора команды:', this.currentTeam);
                     this.sendTeamSelection();
-                } else {
-                    this.log('Не могу отправить команду: не определена');
                 }
             };
             
             this.wsConnection.onmessage = (event) => {
-                this.log('Получено сообщение от сервера');
                 this.handleServerMessage(event.data);
             };
             
-            this.wsConnection.onerror = (error) => {
-                this.log('Ошибка WebSocket:', error);
+            this.wsConnection.onerror = () => {
                 this.isConnected = false;
                 this.updateStatus('error', 'Ошибка');
             };
             
             this.wsConnection.onclose = () => {
-                this.log('WebSocket закрыт');
                 this.isConnected = false;
                 this.updateStatus('disconnected', 'Отключено');
                 
@@ -328,180 +306,184 @@ class RaceManagerSync {
             };
             
         } catch (error) {
-            this.log('Ошибка при подключении:', error);
             this.updateStatus('error', 'Ошибка');
         }
     }
 
     sendTeamSelection() {
-        if (!this.wsConnection || this.wsConnection.readyState !== WebSocket.OPEN) {
-            this.log('Не могу отправить команду: WebSocket не готов');
-            return;
-        }
+        if (!this.wsConnection || this.wsConnection.readyState !== WebSocket.OPEN) return;
         
-        if (!this.currentTeam) {
-            this.log('Не могу отправить команду: не определена');
-            return;
-        }
-        
-        const message = {
+        this.wsConnection.send(JSON.stringify({
             type: 'team_selection',
             team: this.currentTeam,
             timestamp: Date.now()
-        };
-        
-        this.log('Отправка выбора команды:', message);
-        this.wsConnection.send(JSON.stringify(message));
+        }));
     }
 
     sendKartUpdate(kartNumber, status) {
-        if (!this.wsConnection || this.wsConnection.readyState !== WebSocket.OPEN) {
-            this.log('Не могу отправить обновление: WebSocket не готов');
-            return;
-        }
+        if (!this.wsConnection || this.wsConnection.readyState !== WebSocket.OPEN || !this.currentTeam) return;
         
-        if (!this.currentTeam) {
-            this.log('Не могу отправить обновление: команда не определена');
-            return;
-        }
-        
-        const message = {
+        this.wsConnection.send(JSON.stringify({
             type: 'kart_update',
             team: this.currentTeam,
             kart_number: kartNumber,
             status: status,
             timestamp: Date.now()
-        };
-        
-        this.log('Отправка обновления карта:', message);
-        this.wsConnection.send(JSON.stringify(message));
+        }));
     }
 
     requestSync() {
-        if (!this.wsConnection || this.wsConnection.readyState !== WebSocket.OPEN) {
-            return;
-        }
+        if (!this.wsConnection || this.wsConnection.readyState !== WebSocket.OPEN || !this.currentTeam) return;
         
-        if (!this.currentTeam) {
-            return;
-        }
-        
-        const message = {
+        this.wsConnection.send(JSON.stringify({
             type: 'sync_request',
             team: this.currentTeam,
             version: this.serverStateVersion,
             timestamp: Date.now()
-        };
-        
-        this.wsConnection.send(JSON.stringify(message));
+        }));
     }
 
-    handleServerMessage(data) {
+    async handleServerMessage(data) {
         try {
             const message = JSON.parse(data);
-            this.log('Тип сообщения:', message.type);
             
             switch(message.type) {
                 case 'team_confirmed':
-                    this.log('Команда подтверждена сервером');
-                    this.updateStatus('connected', `Подключено`);
+                    this.updateStatus('connected', `Команда ${message.team} (${message.connected_managers})`);
                     break;
                     
                 case 'kart_update_broadcast':
+                    // Игнорируем свои сообщения
+                    if (message.sender === this.getClientId()) {
+                        return;
+                    }
+                    
                     if (message.team === this.currentTeam) {
-                        this.log(`Получено обновление карта ${message.kart_number} = ${message.status}`);
-                        this.applyRemoteKartUpdate(message.kart_number, message.status);
-                    } else {
-                        this.log(`Игнорирую обновление: команда ${message.team} != ${this.currentTeam}`);
+                        console.log(`RaceMann Sync: Получено обновление карта ${message.kart_number} -> ${message.status}`);
+                        
+                        // Проверяем, не обрабатываем ли мы уже этот карт
+                        if (this.currentProcessingKart === message.kart_number) {
+                            console.log(`RaceMann Sync: Карт ${message.kart_number} уже обрабатывается, пропускаем`);
+                            return;
+                        }
+                        
+                        // Проверяем текущий статус
+                        const currentStatus = this.getCurrentKartStatus(message.kart_number);
+                        
+                        // Если статус уже совпадает, ничего не делаем
+                        if (currentStatus === message.status) {
+                            console.log(`RaceMann Sync: Карт ${message.kart_number} уже имеет статус ${message.status}`);
+                            return;
+                        }
+                        
+                        // Устанавливаем флаг обработки
+                        this.isProcessingRemoteUpdate = true;
+                        this.currentProcessingKart = message.kart_number;
+                        
+                        // Эмулируем клики
+                        const success = await this.simulateKartClick(message.kart_number, message.status);
+                        
+                        if (success) {
+                            this.showKartIndicator(message.kart_number, 'receive');
+                            console.log(`RaceMann Sync: Успешно применено обновление для карта ${message.kart_number}`);
+                        } else {
+                            console.log(`RaceMann Sync: Не удалось применить обновление для карта ${message.kart_number}`);
+                        }
+                        
+                        // Сбрасываем флаги
+                        setTimeout(() => {
+                            this.isProcessingRemoteUpdate = false;
+                            this.currentProcessingKart = null;
+                        }, 500);
                     }
                     break;
                     
                 case 'full_state_sync':
                 case 'state_update':
-                    if (message.team === this.currentTeam) {
-                        this.log(`Полное обновление состояния, версия ${message.version}`);
-                        this.applyFullStateSync(message.kart_states, message.version);
+                    if (message.team === this.currentTeam && message.version > this.serverStateVersion) {
+                        console.log('RaceMann Sync: Получено полное обновление состояния');
+                        this.serverStateVersion = message.version;
+                        
+                        // Применяем все изменения по очереди
+                        this.applyFullStateSync(message.kart_states);
                     }
                     break;
             }
             
         } catch (error) {
-            this.log('Ошибка обработки сообщения:', error, 'Данные:', data);
+            console.error('RaceMann Sync: Ошибка обработки сообщения:', error);
+            this.isProcessingRemoteUpdate = false;
+            this.currentProcessingKart = null;
         }
     }
 
-    applyRemoteKartUpdate(kartNumber, status) {
-        this.isSyncing = true;
-        this.log(`Применение удаленного обновления: карт ${kartNumber} = ${status}`);
-        
-        try {
-            this.updateKartInInterface(kartNumber, status);
-            this.showKartIndicator(kartNumber, 'receive');
-            
-        } finally {
-            setTimeout(() => {
-                this.isSyncing = false;
-            }, 50);
-        }
+    getClientId() {
+        return this.wsConnection ? `client_${this.wsConnection.url}_${Date.now()}` : 'unknown';
     }
 
-    updateKartInInterface(kartNumber, status) {
-        this.log(`Обновление интерфейса карта ${kartNumber} на ${status}`);
-        
+    getCurrentKartStatus(kartNumber) {
         const carsContainer = document.getElementById('mng-carsGood');
-        if (!carsContainer) {
-            this.log('Контейнер картов не найден');
-            return;
-        }
+        if (!carsContainer) return null;
         
         const kartElements = carsContainer.querySelectorAll('[onclick*="editMngCarGoodStart"]');
-        let updated = false;
         
-        kartElements.forEach(element => {
+        for (const element of kartElements) {
             const onclick = element.getAttribute('onclick');
             const match = onclick.match(/editMngCarGoodStart\('(\d+)'\)/);
             
             if (match && match[1] === kartNumber) {
-                // Обновляем классы
                 for (let i = 0; i <= 4; i++) {
-                    element.classList.remove(`car-good-${i}`);
+                    if (element.classList.contains(`car-good-${i}`)) {
+                        return i;
+                    }
                 }
-                element.classList.add(`car-good-${status}`);
-                updated = true;
+                return 0;
+            }
+        }
+        
+        return null;
+    }
+
+    async applyFullStateSync(newKartStates) {
+        // Получаем все карты из интерфейса
+        const carsContainer = document.getElementById('mng-carsGood');
+        if (!carsContainer) return;
+        
+        const kartElements = carsContainer.querySelectorAll('[onclick*="editMngCarGoodStart"]');
+        const kartNumbers = [];
+        
+        kartElements.forEach(element => {
+            const onclick = element.getAttribute('onclick');
+            const match = onclick.match(/editMngCarGoodStart\('(\d+)'\)/);
+            if (match) {
+                kartNumbers.push(match[1]);
             }
         });
         
-        if (updated) {
-            this.updateLocalStorage(kartNumber, status);
-            this.localKartStates[kartNumber] = status;
-            this.log(`Карт ${kartNumber} успешно обновлен`);
-        } else {
-            this.log(`Карт ${kartNumber} не найден в интерфейсе`);
-        }
-    }
-
-    applyFullStateSync(newKartStates, serverVersion) {
-        this.log('Применение полной синхронизации');
-        this.isSyncing = true;
-        
-        try {
-            this.serverStateVersion = serverVersion;
+        // Применяем изменения по очереди
+        for (const kartNumber of kartNumbers) {
+            const serverStatus = newKartStates[kartNumber];
+            if (serverStatus === undefined) continue;
             
-            Object.entries(newKartStates).forEach(([kartNumber, serverStatus]) => {
-                const localStatus = this.localKartStates[kartNumber] || 0;
-                
-                if (serverStatus !== localStatus) {
-                    this.log(`Синхронизация карта ${kartNumber}: ${localStatus} -> ${serverStatus}`);
-                    this.updateKartInInterface(kartNumber, serverStatus);
+            const currentStatus = this.getCurrentKartStatus(kartNumber);
+            
+            if (currentStatus !== serverStatus && this.currentProcessingKart !== kartNumber) {
+                // Ждем, если сейчас обрабатывается другой карт
+                while (this.isProcessingRemoteUpdate) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
                 }
-            });
-            
-            this.updateSyncIndicator('synced');
-            
-        } finally {
-            setTimeout(() => {
-                this.isSyncing = false;
-            }, 100);
+                
+                this.isProcessingRemoteUpdate = true;
+                this.currentProcessingKart = kartNumber;
+                
+                await this.simulateKartClick(kartNumber, serverStatus);
+                
+                this.isProcessingRemoteUpdate = false;
+                this.currentProcessingKart = null;
+                
+                // Небольшая задержка между обновлениями
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
         }
     }
 
@@ -573,7 +555,6 @@ class RaceManagerSync {
         statusDiv.innerHTML = `
             <div class="status-indicator" style="width:10px;height:10px;border-radius:50%;background:#757575"></div>
             <span class="status-text">Отключено</span>
-            <div class="debug-info" style="font-size:10px;color:#aaa;margin-left:auto"></div>
         `;
         
         document.body.appendChild(statusDiv);
@@ -585,7 +566,6 @@ class RaceManagerSync {
         
         const indicator = this.statusElement.querySelector('.status-indicator');
         const textElement = this.statusElement.querySelector('.status-text');
-        const debugElement = this.statusElement.querySelector('.debug-info');
         
         if (indicator) {
             indicator.style.transition = 'all 0.3s';
@@ -611,29 +591,6 @@ class RaceManagerSync {
         
         if (textElement) {
             textElement.textContent = text;
-        }
-        
-        if (debugElement) {
-            debugElement.textContent = this.currentTeam ? `Команда: ${this.currentTeam}` : 'Команда не определена';
-        }
-    }
-
-    updateSyncIndicator(type) {
-        const statusDiv = document.getElementById('racemann-sync-status');
-        if (!statusDiv) return;
-        
-        const indicator = statusDiv.querySelector('.status-indicator');
-        if (!indicator) return;
-        
-        if (type === 'synced') {
-            indicator.style.background = '#2196F3';
-            indicator.style.boxShadow = '0 0 6px #2196F3';
-            setTimeout(() => {
-                if (this.isConnected) {
-                    indicator.style.background = '#4CAF50';
-                    indicator.style.boxShadow = '0 0 6px #4CAF50';
-                }
-            }, 500);
         }
     }
 
@@ -662,13 +619,10 @@ function initializeRaceSync() {
         console.log('RaceMann Sync: Запуск расширения');
         raceSyncInstance = new RaceManagerSync();
         window.raceSync = raceSyncInstance;
-        
-        // Для отладки делаем глобальным
-        window.raceSyncDebug = raceSyncInstance;
     }
 }
 
-// Добавляем стили
+// Стили анимации
 if (!document.getElementById('sync-styles')) {
     const style = document.createElement('style');
     style.id = 'sync-styles';
@@ -682,43 +636,9 @@ if (!document.getElementById('sync-styles')) {
     document.head.appendChild(style);
 }
 
-// Запускаем
+// Запуск
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initializeRaceSync);
 } else {
     initializeRaceSync();
-}
-
-// Для отладки: добавляем команды в консоль
-if (typeof window !== 'undefined') {
-    window.debugRaceSync = {
-        getState: () => {
-            if (raceSyncInstance) {
-                return {
-                    currentTeam: raceSyncInstance.currentTeam,
-                    isConnected: raceSyncInstance.isConnected,
-                    localKartStates: raceSyncInstance.localKartStates,
-                    storageKeyPrefix: raceSyncInstance.storageKeyPrefix,
-                    wsState: raceSyncInstance.wsConnection ? raceSyncInstance.wsConnection.readyState : 'no connection'
-                };
-            }
-            return 'Not initialized';
-        },
-        
-        sendTestUpdate: (kartNumber, status) => {
-            if (raceSyncInstance && raceSyncInstance.isConnected && raceSyncInstance.currentTeam) {
-                raceSyncInstance.sendKartUpdate(kartNumber, status);
-                return `Sent update for kart ${kartNumber} = ${status}`;
-            }
-            return 'Not ready to send';
-        },
-        
-        forceSync: () => {
-            if (raceSyncInstance && raceSyncInstance.isConnected && raceSyncInstance.currentTeam) {
-                raceSyncInstance.requestSync();
-                return 'Sync requested';
-            }
-            return 'Not ready to sync';
-        }
-    };
 }
